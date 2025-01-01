@@ -58,7 +58,9 @@ class Connection:
         if self.protocol == Protocol.TCP:
             self.wrong_fragments += int(self.utils.is_wrong_fragment(packet))
 
-        self.connection_metric.update(packet=packet, service=self.service)
+        self.connection_metric.update(
+            packet=packet, service=self.service, current_time=current_time
+        )
 
         self._update_pyshark_flags(packet=packet)
 
@@ -141,6 +143,11 @@ class Connection:
         # number of connections to same service is past 2 seconds
         self.srv_count = None
 
+        # Rate of SYN errors.
+        self.serror_rate = None
+
+        self.srv_serror_rate = None
+
         self.duration: float = 0.0
 
     """
@@ -165,6 +172,8 @@ class Connection:
         # calculate duration
         self.duration = (self.last_activity - self.start_time).total_seconds()
 
+        # TODO consider sending last activity think about it
+
         # get the count of connections
         self.count = self.connection_metric.count.get_count(current_time=current_time)
 
@@ -172,6 +181,27 @@ class Connection:
         self.srv_count = self.connection_metric.srv_count[self.service].get_count(
             current_time=current_time
         )
+
+        # check for SYN error the connection must be tcp to check if syn error occured howver for udp there may be connection metrics giving syn error rate
+        if self._is_syn_error():
+            # TODO consider sending last activity think about it
+            self.connection_metric.increment_syn_error(
+                current_time=current_time, service=self.service
+            )
+
+        self.serror_rate = self.connection_metric.get_serror_rate()
+        self.srv_serror_rate = self.connection_metric.get_srv_serror_rate(self.service)
+
+        # Check for REJ error (based on RST flag in TCP)
+        if self._is_rerror():
+            # Increment REJ error in connection metrics
+            self.connection_metric.increment_rerror(
+                current_time=current_time, service=self.service
+            )
+
+        # Calculate error rates
+        self.rerror_rate = self.connection_metric.get_rerror_rate()
+        self.srv_rerror_rate = self.connection_metric.get_srv_rerror_rate(self.service)
 
         # assign connection flag
         self.assign_flag()
@@ -344,3 +374,26 @@ class Connection:
                 or self.pyshark_flags.flags_syn_ack  # SYN-ACK flag is not set
             )
         )
+
+    """
+        Below are methods for checking TCP errors at end of connections
+
+        NOTE since its an IDS we consider incoming request but for testing in home network almost always orginator is from inside so first SYN 
+        packet is always discarded and hence SYN flags are commented out for now
+    """
+
+    def _is_syn_error(self) -> bool:
+        """
+        Checks if the given packet represents a SYN error (SYN flag set, ACK flag not set).
+        """
+        if self.protocol != Protocol.TCP:
+            return False
+
+        # Check if SYN flag is set and ACK flag is not set
+        return self.pyshark_flags.flags_syn and not self.pyshark_flags.flags_ack
+
+    def _is_rerror(self) -> bool:
+        """
+        Check if the packet represents a REJ error (TCP RST flag).
+        """
+        return self.pyshark_flags.flags_reset  # RST flag is set

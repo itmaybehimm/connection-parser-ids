@@ -15,11 +15,16 @@ class ConnectionMetric:
         # Hold time stamps accroding to service type
         self.srv_count: dict[Service, Count] = {}
 
-    def update(self, packet: Packet, service: Service) -> None:
-        self.update_timestamps(service)
+        # SYN error count
+        self.serror_count = Count()
 
-    def update_timestamps(self, service: Service) -> None:
-        current_time = datetime.datetime.now()
+        # Same service SYN error rate
+        self.srv_serror_count: dict[Service, Count] = {}
+
+    def update(self, packet: Packet, service: Service, current_time: datetime) -> None:
+        self.update_timestamps(service=service, current_time=current_time)
+
+    def update_timestamps(self, service: Service, current_time: datetime) -> None:
         self.count.update_timestamps(current_time=current_time)
 
         # NOTE during testing since random ports of our pc are dst_ports service is usally other and same_srv count is same
@@ -28,3 +33,71 @@ class ConnectionMetric:
         else:
             self.srv_count[service] = Count()
             self.srv_count[service].update_timestamps(current_time=current_time)
+
+    def increment_syn_error(self, service: Service, current_time: datetime) -> None:
+        """
+        Update SYN error count for a specific service.
+        """
+        self.serror_count.update_timestamps(current_time=current_time)
+
+        # Update service-specific SYN error count
+        if service in self.srv_serror_count:
+            self.srv_serror_count[service].update_timestamps(current_time=current_time)
+        else:
+            self.srv_serror_count[service] = Count()
+            self.srv_serror_count[service].update_timestamps(current_time=current_time)
+
+    def get_serror_rate(self) -> float:
+        """
+        Calculate the overall SYN error rate for the connection.
+        """
+        total_connections = self.count.get_count()
+        if total_connections == 0:
+            return 0.0
+        return self.serror_count.get_count() / total_connections
+
+    def get_srv_serror_rate(self, service: Service) -> float:
+        """
+        Calculate the SYN error rate specific to a given service.
+        """
+        total_service_connections = self.srv_count.get(service, Count()).get_count()
+        if total_service_connections == 0:
+            return 0.0
+        return (
+            self.srv_serror_count.get(service, Count()).get_count()
+            / total_service_connections
+        )
+
+    def increment_rerror(self, service: Service, current_time: datetime) -> None:
+        """
+        Update REJ error count for a specific service and overall.
+        """
+        self.rerror_count.update_timestamps(current_time=current_time)
+
+        # Update service-specific REJ error count
+        if service in self.srv_rerror_count:
+            self.srv_rerror_count[service].update_timestamps(current_time=current_time)
+        else:
+            self.srv_rerror_count[service] = Count()
+            self.srv_rerror_count[service].update_timestamps(current_time=current_time)
+
+    def get_rerror_rate(self) -> float:
+        """
+        Calculate the overall REJ error rate for the connection.
+        """
+        total_connections = self.count.get_count()
+        if total_connections == 0:
+            return 0.0
+        return self.rerror_count.get_count() / total_connections
+
+    def get_srv_rerror_rate(self, service: Service) -> float:
+        """
+        Calculate the REJ error rate specific to a given service.
+        """
+        total_service_connections = self.srv_count.get(service, Count()).get_count()
+        if total_service_connections == 0:
+            return 0.0
+        return (
+            self.srv_rerror_count.get(service, Count()).get_count()
+            / total_service_connections
+        )
