@@ -21,6 +21,11 @@ class ConnectionMetric:
         # Same service SYN error rate
         self.srv_serror_count: dict[Service, Count] = {}
 
+        self.rerror_count = Count()
+
+        # Same service SYN error rate
+        self.srv_rerror_count: dict[Service, Count] = {}
+
     def update(self, packet: Packet, service: Service, current_time: datetime) -> None:
         self.update_timestamps(service=service, current_time=current_time)
 
@@ -101,3 +106,27 @@ class ConnectionMetric:
             self.srv_rerror_count.get(service, Count()).get_count()
             / total_service_connections
         )
+
+    def get_same_srv_rate(self, service: Service) -> float:
+        """
+        Calculate the same service rate based on the count of connections to each service.
+        """
+        total_connections = self.count.get_count()
+        same_service_connections = self.srv_count.get(service, Count()).get_count()
+
+        if total_connections == 0:
+            return 0.0
+
+        return same_service_connections / total_connections
+
+    def get_diff_srv_rate(self, service: Service) -> float:
+        """
+        Calculate the different service rate based on the count of connections to different services.
+        """
+        total_connections = self.count.get_count()
+        same_service_connections = self.srv_count.get(service, Count()).get_count()
+
+        if total_connections == 0:
+            return 0.0
+
+        return (total_connections - same_service_connections) / total_connections

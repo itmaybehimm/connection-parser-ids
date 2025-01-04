@@ -26,7 +26,7 @@ class Utils:
     @staticmethod
     def is_wrong_fragment(packet: Packet) -> bool:
         """Check if the given IP packet is a wrong fragment."""
-        # Placeholder for future logic; currently returns False
+        # TODO Placeholder for future logic; currently returns False
         return False
 
     @staticmethod

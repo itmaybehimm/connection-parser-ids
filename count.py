@@ -16,7 +16,7 @@ class Count:
         ] < current_time - datetime.timedelta(seconds=WINDOW_DURATION):
             self.timestamps.popleft()
 
-    def get_count(self, current_time: datetime.datetime):
+    def get_count(self, current_time: datetime.datetime = datetime.datetime.now()):
         """
         Get total number of timestamps, this effectively gets count as at the last activity, time stamp is updated properly
         """
