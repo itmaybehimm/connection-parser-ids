@@ -6,6 +6,7 @@ from flag_utils import (
     assign_connection_flag_inplace,
     assign_connection_rst_flag_inplace,
 )
+from host_connection_metrics import HostConnectionMetric
 from pyshark_flags import PysharkFlags
 from custom_types import (
     PORT_SERVICE_MAP,
@@ -14,17 +15,26 @@ from custom_types import (
     Protocol,
     Service,
 )
+from service_connection_metrics import ServiceConnectionMetric
 from utils import Utils
 
 
 class Connection:
-    def __init__(self, packet: Packet, connection_metric: ConnectionMetric) -> None:
+    def __init__(
+        self,
+        packet: Packet,
+        connection_metric: ConnectionMetric,
+        dst_host_connection_metric: HostConnectionMetric,
+        service_connection_metric: ServiceConnectionMetric,
+    ) -> None:
 
         # Compositon pattern for utils
         self.utils = Utils()
 
         # Compostion pattern for connection metrics
         self.connection_metric = connection_metric
+        self.dst_host_connection_metric = dst_host_connection_metric
+        self.service_connection_metric = service_connection_metric
 
         # Intiitalize ip, protocols  and ports
         self._initialize_ip_port_protocol_service(packet=packet)
@@ -66,6 +76,13 @@ class Connection:
             packet=packet, service=self.service, current_time=current_time
         )
 
+        self.dst_host_connection_metric.update(
+            packet=packet,
+            service=self.service,
+            current_time=current_time,
+            src_port=self.src_port,
+        )
+
         self._update_pyshark_flags(packet=packet)
 
         self.last_activity = current_time
@@ -105,15 +122,15 @@ class Connection:
         if hasattr(packet, "tcp"):
             self.src_port = int(packet.tcp.srcport)
             self.dst_port = int(packet.tcp.dstport)
-            self.protocol: str = Protocol.TCP
+            self.protocol: Protocol = Protocol.TCP
         elif hasattr(packet, "udp"):
             self.src_port = int(packet.udp.srcport)
             self.dst_port = int(packet.udp.dstport)
-            self.protocol: str = Protocol.UDP
+            self.protocol: Protocol = Protocol.UDP
         elif hasattr(packet, "icmp"):
             self.src_port = -1
             self.dst_port = -1
-            self.protocol: str = Protocol.ICMP
+            self.protocol: Protocol = Protocol.ICMP
         else:
             raise InvalidPacketTypeError("Invalid packet type")
 
@@ -122,6 +139,7 @@ class Connection:
     def _initialize_flags(self, packet: Packet):
         # Initialize connection flag
         self.connection_flag: ConnectionFlag = ConnectionFlag.OTH
+        self.urgent_packets = 0
 
         if self.protocol == Protocol.TCP:
             # Initialize flags using PysharkFlags object
@@ -136,6 +154,8 @@ class Connection:
         # Initalize wrong fragment counter; in dataset udp and icmp also have 0 values
         self.wrong_fragments = 0
 
+        self.duration: float = 0.0
+
         # Check land attack
         self.is_land: bool = (self.src_ip == self.dst_ip) and (
             self.src_port == self.dst_port
@@ -143,22 +163,39 @@ class Connection:
 
         # number of connections is past 2 seconds
         self.count = None
+        # number of connections is past 2 seconds
+        self.dst_host_count = None
 
         # number of connections to same service is past 2 seconds
         self.srv_count = None
+        # number of connections to same service is past 2 seconds
+        self.dst_host_srv_count = None
 
         # Rate of SYN errors.
         self.serror_rate = None
         self.srv_serror_rate = None
 
+        self.dst_host_serror_rate = None
+        self.dst_host_srv_serror_rate = None
+
+        # Rate of REJ errors.
         self.rerror_rate = None
         self.srv_rerror_rate = None
+
+        self.dst_host_rerror_rate = None
+        self.dst_host_srv_rerror_rate = None
 
         # Rate of connections to the same service and different service
         self.same_srv_rate = None
         self.diff_srv_rate = None
 
-        self.duration: float = 0.0
+        # Rate of connections to the same service and different service of same dst host
+        self.dst_host_same_srv_rate = None
+        self.dst_host_diff_srv_rate = None
+        self.dst_host_same_src_port_rate = None
+
+        # Connections to different hosts for the same service.
+        self.srv_diff_host_rate = None
 
     """
         Connection Close handling methods
@@ -185,12 +222,20 @@ class Connection:
         # TODO consider sending last activity think about it
 
         # get the count of connections
-        self.count = self.connection_metric.count.get_count(current_time=current_time)
+        self.count = self.connection_metric.count.get_count()
+
+        # get the count of connections to same dst host
+        self.dst_host_count = self.dst_host_connection_metric.count.get_count()
 
         # get the count of same service connections
         self.srv_count = self.connection_metric.srv_count[self.service].get_count(
             current_time=current_time
         )
+
+        # get the count of same service connections to same dst host
+        self.dst_host_srv_count = self.dst_host_connection_metric.srv_count[
+            self.service
+        ].get_count(current_time=current_time)
 
         # check for SYN error the connection must be tcp to check if syn error occured howver for udp there may be connection metrics giving syn error rate
         if self._is_syn_error():
@@ -199,8 +244,17 @@ class Connection:
                 current_time=current_time, service=self.service
             )
 
+            self.dst_host_connection_metric.increment_syn_error(
+                current_time=current_time, service=self.service
+            )
+
         self.serror_rate = self.connection_metric.get_serror_rate()
         self.srv_serror_rate = self.connection_metric.get_srv_serror_rate(self.service)
+
+        self.dst_host_serror_rate = self.dst_host_connection_metric.get_serror_rate()
+        self.dst_host_srv_serror_rate = (
+            self.dst_host_connection_metric.get_srv_serror_rate(self.service)
+        )
 
         # Check for REJ error (based on RST flag in TCP)
         if self._is_rerror():
@@ -208,13 +262,31 @@ class Connection:
             self.connection_metric.increment_rerror(
                 current_time=current_time, service=self.service
             )
+            self.dst_host_connection_metric.increment_rerror(
+                current_time=current_time, service=self.service
+            )
 
         # Calculate error rates
         self.rerror_rate = self.connection_metric.get_rerror_rate()
         self.srv_rerror_rate = self.connection_metric.get_srv_rerror_rate(self.service)
 
+        self.dst_host_rerror_rate = self.dst_host_connection_metric.get_rerror_rate()
+        self.dst_host_srv_rerror_rate = (
+            self.dst_host_connection_metric.get_srv_rerror_rate(self.service)
+        )
+
         self.same_srv_rate = self.connection_metric.get_same_srv_rate(self.service)
         self.diff_srv_rate = self.connection_metric.get_diff_srv_rate(self.service)
+
+        self.dst_host_same_srv_rate = self.dst_host_connection_metric.get_same_srv_rate(
+            self.service
+        )
+        self.dst_host_diff_srv_rate = self.dst_host_connection_metric.get_diff_srv_rate(
+            self.service
+        )
+        self.dst_host_same_src_port_rate = (
+            self.dst_host_connection_metric.get_same_src_port_rate(self.src_port)
+        )
 
         # assign connection flag
         assign_connection_flag_inplace(self)
